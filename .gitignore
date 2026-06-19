@@ -1,0 +1,16 @@
+# Node
+node_modules/
+dist/
+.vite/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Vercel
+.vercel
+
+# OS / editor
+.DS_Store
+*.log
