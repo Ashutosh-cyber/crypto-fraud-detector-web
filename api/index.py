@@ -13,26 +13,37 @@ rewritten to this function) and locally via `uvicorn api.index:app`.
 """
 import json
 import os
+import traceback
 
-import lightgbm as lgb
-import numpy as np
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-BOOSTER = lgb.Booster(model_file=os.path.join(HERE, "model.txt"))
+# Capture any startup failure (e.g. native-lib / bundling issues) instead of
+# crashing the whole serverless function, so the error is observable via /api.
+STARTUP_ERROR = None
+BOOSTER = None
+FEATURE_ORDER = []
+MEDIANS = {}
+EXAMPLES = []
+EXAMPLES_BY_ID = {}
 
-with open(os.path.join(HERE, "features.json")) as f:
-    FEATURE_ORDER = json.load(f)
+try:
+    import lightgbm as lgb
+    import numpy as np
 
-with open(os.path.join(HERE, "medians.json")) as f:
-    MEDIANS = json.load(f)
-
-with open(os.path.join(HERE, "examples.json")) as f:
-    EXAMPLES = json.load(f)
-EXAMPLES_BY_ID = {ex["id"]: ex for ex in EXAMPLES}
+    BOOSTER = lgb.Booster(model_file=os.path.join(HERE, "model.txt"))
+    with open(os.path.join(HERE, "features.json")) as f:
+        FEATURE_ORDER = json.load(f)
+    with open(os.path.join(HERE, "medians.json")) as f:
+        MEDIANS = json.load(f)
+    with open(os.path.join(HERE, "examples.json")) as f:
+        EXAMPLES = json.load(f)
+    EXAMPLES_BY_ID = {ex["id"]: ex for ex in EXAMPLES}
+except Exception:
+    STARTUP_ERROR = traceback.format_exc()
 
 USER_FIELDS = [
     "fees_min",
@@ -99,6 +110,8 @@ class PredictResponse(BaseModel):
 
 @app.get("/api")
 def root():
+    if STARTUP_ERROR:
+        return {"status": "error", "startup_error": STARTUP_ERROR}
     return {"status": "ok", "model": "RQ2 static baseline (LightGBM booster)", "n_features": len(FEATURE_ORDER)}
 
 
