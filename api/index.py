@@ -2,11 +2,12 @@
 """
 Bitcoin Wallet Fraud Detector - serverless API (Vercel Python runtime).
 
-Lightweight rewrite of the original FastAPI backend with NO shap / scikit-learn
-/ pandas dependency, so it fits Vercel's serverless size limits. It loads the
-RQ2 static-baseline model as a native LightGBM booster and uses LightGBM's
-built-in TreeSHAP (`predict(..., pred_contrib=True)`) for feature attributions
-— numerically identical to the original shap.TreeExplainer output.
+Lightweight rewrite of the original FastAPI backend with NO lightgbm / shap /
+scikit-learn / pandas dependency. LightGBM's compiled library can't load on
+Vercel's serverless runtime (missing libgomp), so inference and TreeSHAP are
+reimplemented in pure NumPy (see lgbm_pure.py) by parsing the exported
+model.txt. Feature attributions are numerically identical to LightGBM's
+`predict(..., pred_contrib=True)` (verified to ~1e-16).
 
 Routes are prefixed with /api so they work both on Vercel (where requests are
 rewritten to this function) and locally via `uvicorn api.index:app`.
@@ -31,10 +32,14 @@ EXAMPLES = []
 EXAMPLES_BY_ID = {}
 
 try:
-    import lightgbm as lgb
+    import sys
+
     import numpy as np
 
-    BOOSTER = lgb.Booster(model_file=os.path.join(HERE, "model.txt"))
+    sys.path.insert(0, HERE)  # ensure sibling lgbm_pure is importable on Vercel
+    from lgbm_pure import load_model
+
+    BOOSTER = load_model(os.path.join(HERE, "model.txt"))
     with open(os.path.join(HERE, "features.json")) as f:
         FEATURE_ORDER = json.load(f)
     with open(os.path.join(HERE, "medians.json")) as f:
@@ -112,7 +117,7 @@ class PredictResponse(BaseModel):
 def root():
     if STARTUP_ERROR:
         return {"status": "error", "startup_error": STARTUP_ERROR}
-    return {"status": "ok", "model": "RQ2 static baseline (LightGBM booster)", "n_features": len(FEATURE_ORDER)}
+    return {"status": "ok", "model": "RQ2 static baseline (LightGBM, pure-NumPy inference)", "n_features": len(FEATURE_ORDER)}
 
 
 @app.get("/api/metadata")
@@ -165,14 +170,14 @@ def predict(req: PredictRequest):
         supplied = set(provided.keys())
         example_mode = False
 
-    X = np.array([[row_values[f] for f in FEATURE_ORDER]], dtype=float)
+    x = np.array([row_values[f] for f in FEATURE_ORDER], dtype=float)
 
     # Positive-class (illicit) probability.
-    proba = float(BOOSTER.predict(X)[0])
+    proba = float(BOOSTER.predict_proba_one(x))
     verdict = "Illicit" if proba >= 0.5 else "Licit"
 
-    # Native TreeSHAP: last column is the base value, rest are per-feature.
-    contrib = BOOSTER.predict(X, pred_contrib=True)[0][:-1]
+    # TreeSHAP feature attributions (last slot is the unused base value).
+    contrib = BOOSTER.shap_one(x)[:-1]
 
     order = np.argsort(np.abs(contrib))[::-1][:8]
     top_features = []
